@@ -1,0 +1,60 @@
+我现在在做一个科研话题:探究大模型在prefill only的workload
+ 现在我打算使用vllm，涉及到flash attention 
+ 我打算写这样一个benchmark 主要是flash attention在memory continuously layout 以及不连续layout区别的benchmark 
+ 可能涉及到page attention以及no cache 
+ 我想要
+ 1 输入长度为length的文本
+ 2 这些长度为length的文本转换为qkv之后可能因为存储机制并不是连续存储的，可能是间断为spread_k段
+ 3 间断后任然需要内存对齐 不可以不是基础内存整数倍 你可以根据kvcache原理设计
+ 4 我希望我的代码使用gpu进行加速 并且使用tqdm可视化进度
+ 5 我希望能够打印表格 表格的样式类似于
+   一共三组flash attention 函数 对于每一组都有固定spread_k情况下 连续内存以及不连续内存下各自运行时间 绝对差值以及相对差值
+
+
+ 我有一些调用flash attention的代码你可以参考
+
+from flash_attn import flash_attn_func, flash_attn_qkvpacked_func, flash_attn_with_kvcache
+
+def main():
+    # Set parameters
+    batch_size = 2
+    seqlen_q = 4
+    seqlen_k = 4
+    nheads = 8
+    headdim = 64
+
+    # 1. Basic attention calculation
+    print("=== Basic Attention ===")
+    q = torch.randn(batch_size, seqlen_q, nheads, headdim, dtype=torch.float16).cuda()  # Query
+    k = torch.randn(batch_size, seqlen_k, nheads, headdim, dtype=torch.float16).cuda()  # Key
+    v = torch.randn(batch_size, seqlen_k, nheads, headdim, dtype=torch.float16).cuda()  # Value
+
+    output = flash_attn_func(q, k, v, dropout_p=0.0, softmax_scale=None, causal=False)
+    print("Attention Output :", output)
+    print("Attention Output Shape:", output.shape)
+
+    # 2. Attention calculation using packed QKV
+    print("\n=== Packed Attention ===")
+    qkv = torch.randn(batch_size, seqlen_k, 3, nheads, headdim, dtype=torch.float16).cuda()  # Packed QKV
+    packed_output = flash_attn_qkvpacked_func(qkv, dropout_p=0.0, softmax_scale=None, causal=False)
+    print("Packed Attention Output :", packed_output)
+    print("Packed Attention Output Shape:", packed_output.shape)
+
+    # 3. Attention calculation with KV cache for incremental decoding
+    print("\n=== KV Cache Attention ===")
+    k_cache = torch.randn(batch_size, seqlen_k, nheads, headdim, dtype=torch.float16).cuda()  # Key Cache
+    v_cache = torch.randn(batch_size, seqlen_k, nheads, headdim, dtype=torch.float16).cuda()  # Value Cache
+
+    incremental_output = flash_attn_with_kvcache(q, k_cache, v_cache, softmax_scale=None, causal=True)
+    print("KV Cache Attention Output :", incremental_output)
+    print("KV Cache Attention Output Shape:", incremental_output.shape)
+
+if __name__ == "__main__":
+    main()
+
+
+ 6 可以扩展参数从单一spreadk到一定范围 假设spread_min spread_max spread_step
+ 7 对于范围内的spread_k 重复上述步骤 每一个spread_k都会得到6个点 因为三个flash attention函数各自有间断和不间断的两个数据点所以一共6个
+ 8 把上述内容画图 要求每一个spread函数用同一种颜色 间断内存用虚线 连续内存用实现 并存储
+ 9 每一个spread_k执行后清空现存
+ 10 如果有任何我理解vllm kvcache不正确的地方并且你有十足把握可以适当调整
